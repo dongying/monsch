@@ -198,7 +198,12 @@ class Document(object):
 
     @classmethod
     def validate_id(cls, _id):
-        return cls._schema.validate({'_id': _id})['_id']
+        s = Schema({k: v for k, v in cls._schema._schema.iteritems()
+                    if (k == '_id'
+                        or (isinstance(k, Optional)
+                            and k._schema == '_id'))
+                    })
+        return s.validate({'_id': _id})['_id']
 
     @classmethod
     def validate_partial(cls, doc):
@@ -239,7 +244,7 @@ class Document(object):
         if self._id is None:
             raise KeyError("`_id` is None.")
 
-        doc = self.connection.find_one({'_id': self._id})
+        doc = self.collection.find_one({'_id': self._id})
         if doc is None:
             self._doc = {}
             self._in_db = False
@@ -308,7 +313,7 @@ class Document(object):
         self._blur(removed_fields=keys)
 
     def __setitem__(self, key, value):
-        self.update({key, value})
+        self.update({key: value})
 
     def update(self, doc):
         doc = self.validate_partial(doc)
@@ -328,7 +333,7 @@ class Document(object):
         if not cls._indices:
             return
 
-        collection = cls.connection
+        collection = cls.collection
         for index in cls._indices:
             fields = cls._indices['fields']
             kwargs = {key: value for key, value in cls._indices.iteritems()
