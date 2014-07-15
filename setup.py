@@ -10,7 +10,7 @@ setup(
     version=monsch.__version__,
     author="Dongying Zhang",
     author_email="zhdongying@gmail.com",
-    description="A very simple MongoDB ORM based on PyMongo and Schema.",
+    description="A very simple MongoDB ORM based on PyMongo and a fork version of Schema.",
     license="MIT",
     keywords="mongodb orm monsch",
     url="https://github.com/Dongying/monsch",
@@ -28,6 +28,5 @@ setup(
     ],
     install_requires=[
         'pymongo>=2.5',
-        'schema>=0.3.1',
     ],
 )

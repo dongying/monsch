@@ -1,14 +1,9 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import bson
 import re
-from schema import Schema, Or, And, Use, Optional
+from .schema import Schema, Or, And, Optional, Default
 from pymongo import MongoClient
-
-
-__all__ = ('bson', 'Schema', 'Or', 'And', 'Use', 'Optional',
-           'Pools', 'Default', 'Document')
 
 
 class Pools(object):
@@ -47,6 +42,14 @@ class Pools(object):
         return MongoClient(host=uri, **kwargs)
 
     @classmethod
+    def disconnect(cls, name):
+        if name not in cls._pools:
+            return
+        connection = cls._pools[name]
+        del cls._pools[name]
+        connection.disconnect()
+
+    @classmethod
     def get_database(cls, name=None):
         name = cls.get_default_name(name)
         connection = cls.get_connection(name)
@@ -54,7 +57,7 @@ class Pools(object):
         return connection[confs['db']]
 
     @classmethod
-    def has_name(cls, name, **confs):
+    def has_name(cls, name):
         return name in cls._pool_confs
 
     @classmethod
@@ -78,7 +81,7 @@ class Pools(object):
         return cls._pool_confs.get(name, {})
 
     @classmethod
-    def set_confs(cls, name, **confs):
+    def set_confs(cls, name, confs):
         cls._pool_confs[name] = confs
         if len(cls._pool_confs) == 1:
             cls.set_default_name(name)
@@ -92,14 +95,11 @@ class Pools(object):
             cls.set_default_name(cls._pool_confs.keys()[0])
 
 
-def Default(value):
-    return lambda whatever: value
-
-
 _schema_of_structure = Schema({
-    Optional('_id'): Or(Use(bson.ObjectId), object),
+    #Optional('_id'): Or(object, Default(bson.ObjectId, force_value=True)),
     Or(
-        And(Optional, lambda v: re.compile(r"^$|^[^.$]{1,1}[^\.]*$").match(v._schema)),
+        And(lambda k: isinstance(k, Optional),
+            lambda v: re.compile(r"^$|^[^.$]{1,1}[^\.]*$").match(v._schema)),
         And(basestring, lambda v: re.compile(r"^$|^[^.$]{1,1}[^\.]*$").match(v)),
         error="key must match regular expresion r\"^$|^[^.$]{1,1}[^\.]*$\""
     ): object,
@@ -107,12 +107,12 @@ _schema_of_structure = Schema({
 
 
 _schema_of_indices = Schema(
-    [
+    Optional([
         {
             'fields': [(basestring, object)],
             Optional(basestring): object,
         }
-    ]
+    ])
 )
 
 
@@ -145,8 +145,20 @@ class _DocumentMetaClass(type):
         if not structure:
             raise AttributeError("Can't define a mongo document without stucture")
 
-        attrs['_schema'] = _schema_of_structure.validate(structure)
-        attrs.setdefault('indices', _schema_of_indices.validate(getattr(bases[0], 'indices', [])))
+        if '_id' in structure:
+            valid_id = structure['_id']
+            del structure['_id']
+            structure[Optional('_id')] = valid_id
+        for key, value in structure.iteritems():
+            if isinstance(key, Optional) and key._schema == '_id':
+                break
+        else:
+            structure[Optional('_id')] = Or(object, Default(bson.ObjectId))
+
+        structure = _schema_of_structure.validate(structure)
+        attrs['_schema'] = Schema(structure)
+        attrs.setdefault('indices',
+                         _schema_of_indices.validate(getattr(bases[0], 'indices', [])))
 
         base_options = getattr(bases[0], '__options__', None)
         options = base_options.copy() if base_options else {}
@@ -168,12 +180,13 @@ class Document(object):
         self._doc = {}
         self._changed_doc = {}
         self._removed_doc = {}
-        self._changed = True
+        self._changed = False
         self._in_db = False
 
         if args[0]:
             if isinstance(args[0], dict):
                 self._doc = self.validate(args[0])
+                self._blur(changed_doc=self._doc)
             else:
                 self._id = self.validate_id(args[0])
 
