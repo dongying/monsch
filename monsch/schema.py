@@ -2,7 +2,6 @@
 
 
 class SchemaError(Exception):
-
     """Error during Schema validation."""
 
     def __init__(self, autos, errors):
@@ -25,7 +24,13 @@ class SchemaError(Exception):
 
 class Strategy(object):
 
-    def validate(self, data=None):
+    def __init__(self, *args, **kw):
+        assert set(kw.keys()).issubset(set(['error', 'default']))
+        self._error = kw.get('error')
+        if 'default' in kw:
+            self.default = kw.get('default')
+
+    def validate(self, data):
         raise NotImplementedError
 
 
@@ -33,8 +38,7 @@ class And(Strategy):
 
     def __init__(self, *args, **kw):
         self._args = args
-        assert list(kw) in (['error'], [])
-        self._error = kw.get('error')
+        super(And, self).__init__(*args, **kw)
 
     def __repr__(self):
         return '%s(%s)' % (self.__class__.__name__,
@@ -61,10 +65,10 @@ class Or(And):
 
 class Use(Strategy):
 
-    def __init__(self, callable_, error=None):
+    def __init__(self, callable_, **kw):
         assert callable(callable_)
         self._callable = callable_
-        self._error = error
+        super(Use, self).__init__(**kw)
 
     def __repr__(self):
         return '%s(%r)' % (self.__class__.__name__, self._callable)
@@ -81,15 +85,15 @@ class Use(Strategy):
 
 class Default(Strategy):
 
-    def __init__(self, value, force_value=False, error=None):
+    def __init__(self, value, force_value=False, **kw):
         self._value = value
         self._force_value = force_value
-        self._error = error
+        super(Default, self).__init__(**kw)
 
     def __repr__(self):
         return '%s(%r)' % (self.__class__.__name__, self._value)
 
-    def validate(self, data):
+    def validate(self, *args):
         try:
             if callable(self._value) and not self._force_value:
                 return self._value()
@@ -105,7 +109,7 @@ def priority(s):
         return 6
     if type(s) is dict:
         return 5
-    if hasattr(s, 'validate'):
+    if isinstance(s, Strategy):
         return 4
     if issubclass(type(s), type):
         return 3
@@ -117,19 +121,31 @@ def priority(s):
 
 class Schema(Strategy):
 
-    def __init__(self, schema, error=None):
+    def __init__(self, schema, **kw):
         self._schema = schema
-        self._error = error
+        if isinstance(schema, Strategy) and hasattr(schema, 'default'):
+            self.default = schema.default
+        super(Schema, self).__init__(**kw)
 
     def __repr__(self):
         return '%s(%r)' % (self.__class__.__name__, self._schema)
 
-    def validate(self, data):
+    def validate(self, *args):
+        if len(args) == 0:
+            if not hasattr(self, 'default'):
+                raise SchemaError('input missing for validation!', [self._error])
+            if isinstance(self.default, Default):
+                return self.default.validate()
+            return self.default
+
+        data = args[0]
         s = self._schema
         e = self._error
+
         if type(s) in (list, tuple, set, frozenset):
             data = Schema(type(s), error=e).validate(data)
             return type(s)(Or(*s, error=e).validate(d) for d in data)
+
         if type(s) is dict:
             data = Schema(dict, error=e).validate(data)
             new = type(data)()  # new - is a dict of the validated values
@@ -162,6 +178,7 @@ class Schema(Strategy):
                     if x is not None:
                         raise SchemaError(['invalid value for key %r' % key] +
                                           x.autos, [e] + x.errors)
+
             coverage = set(k for k in coverage if type(k) is not Optional)
             required = set(k for k in s if type(k) is not Optional)
 
@@ -169,8 +186,12 @@ class Schema(Strategy):
                 if isinstance(skey, Strategy):
                     break
                 svalue = s[skey]
+
                 nkey = skey
-                nvalue = Schema(svalue, error=e).validate(None)
+                try:
+                    nvalue = Schema(svalue, error=e).validate()
+                except SchemaError:
+                    break
 
                 new[nkey] = nvalue
                 coverage.add(skey)
@@ -183,7 +204,8 @@ class Schema(Strategy):
                 raise SchemaError('wrong keys %s in %r' % (s_wrong_keys, data),
                                   e)
             return new
-        if hasattr(s, 'validate'):
+
+        if isinstance(s, Strategy):
             try:
                 return s.validate(data)
             except SchemaError as x:
@@ -191,11 +213,13 @@ class Schema(Strategy):
             except BaseException as x:
                 raise SchemaError('%r.validate(%r) raised %r' % (s, data, x),
                                   self._error)
+
         if issubclass(type(s), type):
             if isinstance(data, s):
                 return data
             else:
                 raise SchemaError('%r should be instance of %r' % (data, s), e)
+
         if callable(s):
             f = s.__name__
             try:
@@ -207,8 +231,10 @@ class Schema(Strategy):
                 raise SchemaError('%s(%r) raised %r' % (f, data, x),
                                   self._error)
             raise SchemaError('%s(%r) should evaluate to True' % (f, data), e)
+
         if s == data:
             return data
+
         else:
             raise SchemaError('%r does not match %r' % (s, data), e)
 
